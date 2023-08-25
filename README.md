@@ -7,5 +7,6 @@
 ```shell
 ./build.sh
 docker build -t fleet-packager:latest .
+docker run fleet-packager:latest
 ## todo docker push ECR
 ```
