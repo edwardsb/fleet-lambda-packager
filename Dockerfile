@@ -1,5 +1,5 @@
 FROM fleetdm/fleetctl
-WORKDIR /opt/packager
+WORKDIR /tmp
 RUN mkdir "build"
 COPY packager .
 RUN chmod +x packager
