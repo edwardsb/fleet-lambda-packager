@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -14,9 +16,11 @@ import (
 	"github.com/fleetdm/fleet/v4/orbit/pkg/packaging"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/service"
+	"github.com/go-resty/resty/v2"
 )
 
 type CreateInstallersRequest struct {
+	TeamName     string   `json:"team_name"`
 	EnrollSecret string   `json:"enroll_secret"`
 	Packages     []string `json:"packages"`
 }
@@ -29,17 +33,23 @@ type CreateInstallersRequest struct {
 // retrieves and modifies the Enroll Secret Specification from the Fleet server, defines the options for building the packages,
 // builds the different packages types as requested, logs all built package identifiers and finally returns an HTTP response.
 func handler(ctx context.Context, event events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
-	response := events.APIGatewayProxyResponse{
-		StatusCode: 200,
-		Body:       "\"Hello from Lambda!\"",
-	}
-
 	// parse the APIGateway event body
 	installersRequest, err := parseEventBody(event)
 	if err != nil {
 		return respondError(fmt.Errorf("failed to parse generate installer request: %w", err))
 	}
+	response, err := invoke(installersRequest)
+	if err != nil {
+		return respondError(err)
+	}
+	return response, nil
+}
 
+func invoke(installersRequest CreateInstallersRequest) (events.APIGatewayProxyResponse, error) {
+	response := events.APIGatewayProxyResponse{
+		StatusCode: 200,
+		Body:       "\"Hello from Lambda!\"",
+	}
 	// create a new fleet client
 	fleetClient, err := service.NewClient(os.Getenv("FLEET_URL"), false, "", "")
 	if err != nil {
@@ -48,23 +58,30 @@ func handler(ctx context.Context, event events.APIGatewayProxyRequest) (events.A
 	// set up the fleet client authentication
 	fleetClient.SetToken(os.Getenv("FLEET_API_ONLY_USER_TOKEN"))
 
-	// get the current server enroll secrets
-	enrollSecretSpec, err := fleetClient.GetEnrollSecretSpec()
-	if err != nil {
-		return respondError(fmt.Errorf("failed to obtain secret spec: %w", err))
-	}
+	restClient := resty.New().SetBaseURL(os.Getenv("FLEET_URL")).SetAuthToken(os.Getenv("FLEET_API_ONLY_USER_TOKEN"))
 
-	// add the secret coming in from the APIGateway request to the current list of secrets and apply
-	enrollSecretSpec.Secrets = append(enrollSecretSpec.Secrets, &fleet.EnrollSecret{Secret: installersRequest.EnrollSecret})
-	err = fleetClient.ApplyEnrollSecretSpec(enrollSecretSpec)
+	var team fleet.Team
+	var apiErr *apiError
+	resp, err := restClient.R().
+		SetHeader("Accept", "application/json").
+		SetBody(fleet.Team{Name: installersRequest.TeamName}).
+		SetError(&apiErr).
+		SetResult(&team).
+		Post("/api/latest/fleet/teams")
 	if err != nil {
-		return respondError(fmt.Errorf("fialed to apply new enroll secret spec: %w", err))
+		return respondError(err)
+	}
+	if apiErr != nil {
+		return respondError(errorFromAPIError(apiErr))
+	}
+	if resp.StatusCode() != http.StatusOK {
+		return respondError(fmt.Errorf("unexpected api response status code: %d", resp.StatusCode()))
 	}
 
 	// default packaging options
 	options := packaging.Options{
 		FleetURL:            os.Getenv("FLEET_SERVER_URL"),
-		EnrollSecret:        installersRequest.EnrollSecret, // create the installers with the new enroll secret
+		EnrollSecret:        team.Secrets[0].Secret, // create the installers with the new enroll secret
 		UpdateURL:           "https://tuf.fleetctl.com",
 		Identifier:          "com.fleetdm.orbit",
 		StartService:        true,
@@ -112,6 +129,19 @@ func handler(ctx context.Context, event events.APIGatewayProxyRequest) (events.A
 	return response, nil
 }
 
+func errorFromAPIError(err *apiError) error {
+	if err != nil {
+		if len(err.Errors) > 0 {
+			messages := make([]string, len(err.Errors))
+			for _, msg := range err.Errors {
+				messages = append(messages, fmt.Sprintf("name: %s reason: %s", msg.Name, msg.Reason))
+			}
+			return fmt.Errorf("api error: %s messages: %s", err.Message, strings.Join(messages, ", "))
+		}
+	}
+	return errors.New("no api error defined")
+}
+
 // buildPackage is a function that takes a packageType string, a packagerFunc function, and options packaging.Options
 // to build a package using the provided packager function with the given options.
 // It returns the path of the built package and an error if the packaging process fails.
@@ -151,8 +181,8 @@ func respondError(err error) (events.APIGatewayProxyResponse, error) {
 	respBody["error"] = err.Error()
 
 	// Attempt to marshal the response body into JSON
-	buf, err := json.Marshal(respBody)
-	if err != nil {
+	buf, marshalErr := json.Marshal(respBody)
+	if marshalErr != nil {
 		// If marshalling failed, return an error response with an appropriate message
 		return events.APIGatewayProxyResponse{StatusCode: http.StatusInternalServerError, Body: "[\"error\":\"failed to marshal err response\"}"}, err
 	}
@@ -163,5 +193,20 @@ func respondError(err error) (events.APIGatewayProxyResponse, error) {
 }
 
 func main() {
-	lambda.Start(handler)
+	if os.Getenv("LOCAL") != "" {
+		_, err := invoke(CreateInstallersRequest{TeamName: "bentestteam", EnrollSecret: "test123", Packages: []string{"deb"}})
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		lambda.Start(handler)
+	}
+}
+
+type apiError struct {
+	Message string `json:"message"`
+	Errors  []struct {
+		Name   string `json:"name"`
+		Reason string `json:"reason"`
+	} `json:"errors"`
 }
