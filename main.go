@@ -60,7 +60,10 @@ func invoke(installersRequest CreateInstallersRequest) (events.APIGatewayProxyRe
 
 	restClient := resty.New().SetBaseURL(os.Getenv("FLEET_URL")).SetAuthToken(os.Getenv("FLEET_API_ONLY_USER_TOKEN"))
 
-	var team fleet.Team
+	type fleetTeam struct {
+		Team fleet.Team `json:"team"`
+	}
+	var team fleetTeam
 	var apiErr *apiError
 	resp, err := restClient.R().
 		SetHeader("Accept", "application/json").
@@ -74,6 +77,7 @@ func invoke(installersRequest CreateInstallersRequest) (events.APIGatewayProxyRe
 	if apiErr != nil {
 		return respondError(errorFromAPIError(apiErr))
 	}
+	// todo make this less lazy
 	if resp.StatusCode() != http.StatusOK {
 		return respondError(fmt.Errorf("unexpected api response status code: %d", resp.StatusCode()))
 	}
@@ -81,7 +85,7 @@ func invoke(installersRequest CreateInstallersRequest) (events.APIGatewayProxyRe
 	// default packaging options
 	options := packaging.Options{
 		FleetURL:            os.Getenv("FLEET_SERVER_URL"),
-		EnrollSecret:        team.Secrets[0].Secret, // create the installers with the new enroll secret
+		EnrollSecret:        team.Team.Secrets[0].Secret, // create the installers with the new enroll secret
 		UpdateURL:           "https://tuf.fleetctl.com",
 		Identifier:          "com.fleetdm.orbit",
 		StartService:        true,
