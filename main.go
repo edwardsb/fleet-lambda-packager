@@ -13,11 +13,15 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/fleetdm/fleet/v4/orbit/pkg/packaging"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/service"
 	"github.com/go-resty/resty/v2"
 )
+
+var s3Client *s3.Client
 
 type CreateInstallersRequest struct {
 	TeamName     string   `json:"team_name"`
@@ -128,9 +132,45 @@ func invoke(installersRequest CreateInstallersRequest) (events.APIGatewayProxyRe
 
 	for _, i := range installers {
 		log.Printf("built %s", i)
+		info, err := os.Stat(i)
+		if err != nil {
+			log.Printf("error getting file info %s: %s\n", i, err)
+			continue
+		}
+		log.Printf("file info: %+v\n", info)
+
+		// upload results to S3
+		err = uploadArtifact(i, installersRequest.TeamName)
+		if err != nil {
+			log.Printf("failed to upload to s3: %s", err)
+		}
+
 	}
 
 	return response, nil
+}
+
+func uploadArtifact(file string, name string) error {
+	bucket := os.Getenv("ARTIFACT_BUCKET")
+	if bucket == "" {
+		return errors.New("bucket name cannot be empty")
+	}
+	objectKey := fmt.Sprintf("teamName=%s/%s", name, file)
+	f, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	params := &s3.PutObjectInput{
+		Bucket: &bucket,
+		Key:    &objectKey,
+		Body:   f,
+	}
+	_, err = s3Client.PutObject(context.Background(), params)
+	if err != nil {
+		return err
+	}
+	log.Println("successfully uploaded to bucket")
+	return nil
 }
 
 func errorFromAPIError(err *apiError) error {
@@ -197,8 +237,13 @@ func respondError(err error) (events.APIGatewayProxyResponse, error) {
 }
 
 func main() {
+	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(os.Getenv("AWS_REGION")))
+	if err != nil {
+		log.Fatalf("unable to load SDK config, %v", err)
+	}
+	s3Client = s3.NewFromConfig(cfg)
 	if os.Getenv("LOCAL") != "" {
-		_, err := invoke(CreateInstallersRequest{TeamName: "bentestteam", EnrollSecret: "test123", Packages: []string{"deb"}})
+		_, err := invoke(CreateInstallersRequest{TeamName: "bentestteam", EnrollSecret: "test123", Packages: []string{"deb", "rpm"}})
 		if err != nil {
 			log.Fatal(err)
 		}
