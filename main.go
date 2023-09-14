@@ -37,6 +37,7 @@ type CreateInstallersRequest struct {
 // retrieves and modifies the Enroll Secret Specification from the Fleet server, defines the options for building the packages,
 // builds the different packages types as requested, logs all built package identifiers and finally returns an HTTP response.
 func handler(ctx context.Context, event events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+	log.Printf("hello lambda handler")
 	// parse the APIGateway event body
 	installersRequest, err := parseEventBody(event)
 	if err != nil {
@@ -84,6 +85,11 @@ func invoke(installersRequest CreateInstallersRequest) (events.APIGatewayProxyRe
 	// todo make this less lazy
 	if resp.StatusCode() != http.StatusOK {
 		return respondError(fmt.Errorf("unexpected api response status code: %d", resp.StatusCode()))
+	}
+
+	err = os.Mkdir("/tmp/build", 0755)
+	if err != nil {
+		log.Printf("/tmp/build already exists")
 	}
 
 	// default packaging options
@@ -243,7 +249,10 @@ func main() {
 	}
 	s3Client = s3.NewFromConfig(cfg)
 	if os.Getenv("LOCAL") != "" {
-		_, err := invoke(CreateInstallersRequest{TeamName: "bentestteam", EnrollSecret: "test123", Packages: []string{"deb", "rpm"}})
+		createInstallersRequest := CreateInstallersRequest{TeamName: "bentestteam", EnrollSecret: "test123", Packages: []string{"deb", "rpm"}}
+		buf, _ := json.Marshal(createInstallersRequest)
+		fmt.Println(string(buf))
+		_, err := invoke(createInstallersRequest)
 		if err != nil {
 			log.Fatal(err)
 		}

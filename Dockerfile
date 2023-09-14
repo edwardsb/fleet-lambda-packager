@@ -1,6 +1,6 @@
 FROM fleetdm/fleetctl
+RUN mkdir -p /tmp/build
+COPY packager /opt/packager
+RUN chmod +x /opt/packager
 WORKDIR /tmp
-RUN mkdir "build"
-COPY packager .
-RUN chmod +x packager
-ENTRYPOINT ["./packager"]
+ENTRYPOINT ["/opt/packager"]
