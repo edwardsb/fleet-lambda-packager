@@ -107,42 +107,54 @@ func invoke(installersRequest CreateInstallersRequest) (events.APIGatewayProxyRe
 		OrbitUpdateInterval: 15 * time.Minute,
 	}
 
+	buildWg := sync.WaitGroup{}
 	var installers []string
+	var buildErr error
+	var errResp events.APIGatewayProxyResponse
 	for _, packageType := range installersRequest.Packages {
-		switch packageType {
-		case "deb":
-			pkg, err := buildPackage(packageType, packaging.BuildDeb, options)
-			if err != nil {
-				return respondError(err)
+		packageType := packageType // needed to capture current value of i during for loop fixed in Go 1.22
+		buildWg.Add(1)
+		go func() {
+			defer buildWg.Done()
+			switch packageType {
+			case "deb":
+				pkg, err := buildPackage(packageType, packaging.BuildDeb, options)
+				if err != nil {
+					errResp, buildErr = respondError(err)
+				}
+				installers = append(installers, pkg)
+			case "rpm":
+				pkg, err := buildPackage(packageType, packaging.BuildRPM, options)
+				if err != nil {
+					errResp, buildErr = respondError(err)
+				}
+				installers = append(installers, pkg)
+			case "pkg":
+				pkg, err := buildPackage(packageType, packaging.BuildPkg, options)
+				if err != nil {
+					errResp, buildErr = respondError(err)
+				}
+				installers = append(installers, pkg)
+			case "msi":
+				pkg, err := buildPackage(packageType, packaging.BuildMSI, options)
+				if err != nil {
+					errResp, buildErr = respondError(err)
+				}
+				installers = append(installers, pkg)
 			}
-			installers = append(installers, pkg)
-		case "rpm":
-			pkg, err := buildPackage(packageType, packaging.BuildRPM, options)
-			if err != nil {
-				return respondError(err)
-			}
-			installers = append(installers, pkg)
-		case "pkg":
-			pkg, err := buildPackage(packageType, packaging.BuildPkg, options)
-			if err != nil {
-				return respondError(err)
-			}
-			installers = append(installers, pkg)
-		case "msi":
-			pkg, err := buildPackage(packageType, packaging.BuildMSI, options)
-			if err != nil {
-				return respondError(err)
-			}
-			installers = append(installers, pkg)
-		}
+		}()
+	}
+	buildWg.Wait()
+	if buildErr != nil {
+		return errResp, buildErr
 	}
 
-	wg := sync.WaitGroup{}
+	uploadWg := sync.WaitGroup{}
 	for _, i := range installers {
 		i := i // needed to capture current value of i during for loop fixed in Go 1.22
+		uploadWg.Add(1)
 		go func() {
-			wg.Add(1)
-			defer wg.Done()
+			defer uploadWg.Done()
 			log.Printf("built %s", i)
 			info, err := os.Stat(i)
 			if err != nil {
@@ -158,7 +170,7 @@ func invoke(installersRequest CreateInstallersRequest) (events.APIGatewayProxyRe
 			}
 		}()
 	}
-	wg.Wait()
+	uploadWg.Wait()
 
 	return response, nil
 }
