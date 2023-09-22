@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -136,22 +137,28 @@ func invoke(installersRequest CreateInstallersRequest) (events.APIGatewayProxyRe
 		}
 	}
 
+	wg := sync.WaitGroup{}
 	for _, i := range installers {
-		log.Printf("built %s", i)
-		info, err := os.Stat(i)
-		if err != nil {
-			log.Printf("error getting file info %s: %s\n", i, err)
-			continue
-		}
-		log.Printf("file info: %+v\n", info)
+		i := i // needed to capture current value of i during for loop fixed in Go 1.22
+		go func() {
+			wg.Add(1)
+			defer wg.Done()
+			log.Printf("built %s", i)
+			info, err := os.Stat(i)
+			if err != nil {
+				log.Printf("error getting file info %s: %s\n", i, err)
+				return
+			}
+			log.Printf("file info: %+v\n", info)
 
-		// upload results to S3
-		err = uploadArtifact(i, installersRequest.TeamName)
-		if err != nil {
-			log.Printf("failed to upload to s3: %s", err)
-		}
-
+			// upload results to S3
+			err = uploadArtifact(i, installersRequest.TeamName)
+			if err != nil {
+				log.Printf("failed to upload to s3: %s", err)
+			}
+		}()
 	}
+	wg.Wait()
 
 	return response, nil
 }
